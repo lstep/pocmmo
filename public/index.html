@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>PoC MMORPG Spatial</title>
+    <!-- Chargement CDN officiel de la version stable de Phaser 4 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/4.2.0/phaser.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            background-color: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        canvas {
+            border: 4px solid #333;
+            box-shadow: 0px 10px 20px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+<body>
+
+<script>
+    class OfficeScene extends Phaser.Scene {
+        constructor() {
+            super({ key: 'OfficeScene' });
+            this.socket = null;
+            this.localId = null;
+            this.localPlayer = null;
+            this.remotePlayers = {}; // Conteneur pour stocker les avatars distants
+            this.cursors = null;
+        }
+
+        preload() {
+            // Pas d'assets d'images externes à charger, on va dessiner nos avatars
+        }
+
+        create() {
+            // Création des écouteurs de touches clavier (WASD / Flèches) [cite: 11]
+            this.cursors = this.input.keyboard.createCursorKeys();
+
+            // Raccordement WebSocket dynamique s'adaptant à l'hôte [cite: 12]
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            this.socket = new WebSocket(wsUrl);
+
+            this.socket.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                this.handleNetworkMessage(msg);
+            };
+
+            this.socket.onclose = () => {
+                console.log("Connexion avec le serveur Go perdue.");
+            };
+        }
+
+        update(time, delta) {
+            // 1. Déplacement de l'avatar local (Client-Side Prediction) [cite: 13]
+            if (!this.localPlayer) return;
+
+            let moved = false;
+            const speed = 4;
+
+            if (this.cursors.left.isDown) {
+                this.localPlayer.x -= speed;
+                moved = true;
+            } else if (this.cursors.right.isDown) {
+                this.localPlayer.x += speed;
+                moved = true;
+            }
+
+            if (this.cursors.up.isDown) {
+                this.localPlayer.y -= speed;
+                moved = true;
+            } else if (this.cursors.down.isDown) {
+                this.localPlayer.y += speed;
+                moved = true;
+            }
+
+            // Si l'avatar s'est déplacé, on diffuse sa nouvelle position
+            if (moved) {
+                this.socket.send(JSON.stringify({
+                    type: "move",
+                    x: this.localPlayer.x,
+                    y: this.localPlayer.y
+                }));
+            }
+
+            // 2. Lissage visuel des avatars distants (Interpolation Linéaire - LERP) [cite: 6]
+            // On glisse vers la coordonnée cible reçue pour éliminer l'effet de téléportation [cite: 6]
+            for (let id in this.remotePlayers) {
+                const player = this.remotePlayers[id];
+                if (player.targetX !== undefined) {
+                    // Facteur d'amortissement de 0.2 (environ 20% de l'écart comblé par frame) [cite: 6]
+                    player.sprite.x += (player.targetX - player.sprite.x) * 0.2;
+                    player.sprite.y += (player.targetY - player.sprite.y) * 0.2;
+                }
+            }
+        }
+
+        handleNetworkMessage(msg) {
+            switch (msg.type) {
+                case "init":
+                    this.localId = msg.id;
+                    // Création de l'état initial des membres déjà présents [cite: 8, 10]
+                    for (let id in msg.players) {
+                        const p = msg.players[id];
+                        if (id === this.localId) {
+                            this.spawnLocalPlayer(p.x, p.y);
+                        } else {
+                            this.spawnRemotePlayer(id, p.x, p.y);
+                        }
+                    }
+                    break;
+
+                case "join":
+                    if (msg.id !== this.localId) {
+                        this.spawnRemotePlayer(msg.id, msg.x, msg.y);
+                    }
+                    break;
+
+                case "update":
+                    if (this.remotePlayers[msg.id]) {
+                        // On affecte la coordonnée reçue à la cible de l'interpolation [cite: 6, 14]
+                        this.remotePlayers[msg.id].targetX = msg.x;
+                        this.remotePlayers[msg.id].targetY = msg.y;
+                    }
+                    break;
+
+                case "leave":
+                    if (this.remotePlayers[msg.id]) {
+                        this.remotePlayers[msg.id].sprite.destroy();
+                        delete this.remotePlayers[msg.id];
+                    }
+                    break;
+            }
+        }
+
+        spawnLocalPlayer(x, y) {
+            // L'avatar local est un cercle Vert (0x00ff00) de rayon 16px
+            this.localPlayer = this.add.circle(x, y, 16, 0x00ff00);
+            
+            // Ajout d'une bordure pour le faire ressortir
+            this.localPlayer.setStrokeStyle(2, 0xffffff);
+        }
+
+        spawnRemotePlayer(id, x, y) {
+            // Les avatars distants sont des cercles Rouges (0xff3333)
+            const sprite = this.add.circle(x, y, 16, 0xff3333);
+            sprite.setStrokeStyle(2, 0x000000);
+            
+            this.remotePlayers[id] = {
+                sprite: sprite,
+                targetX: x,
+                targetY: y
+            };
+        }
+    }
+
+    // Configuration de base du moteur Phaser 4 [cite: 15]
+    const config = {
+        type: Phaser.AUTO,
+        width: 800,
+        height: 600,
+        parent: 'game-container',
+        backgroundColor: '#2d2d2d',
+        scene: OfficeScene
+    };
+
+    const game = new Phaser.Game(config);
+</script>
+
+<div id="game-container"></div>
+
+</body>
+</html>
